@@ -201,12 +201,18 @@ export class AuthService {
     const cleanEmail = email.toLowerCase().trim();
     const user = db.getUserByEmail(cleanEmail);
     if (!user) {
-      throw new Error('Invalid email or password.');
+      const err: any = new Error('Alamat email belum terdaftar di ArahMarket.');
+      err.code = 'USER_NOT_FOUND';
+      err.email = cleanEmail;
+      throw err;
     }
 
     const isValid = this.verifyPassword(password, user.password_hash, user.salt);
     if (!isValid) {
-      throw new Error('Invalid email or password.');
+      const err: any = new Error('Kata sandi salah untuk akun ini. Silakan periksa kembali atau gunakan fitur Reset Kata Sandi.');
+      err.code = 'INVALID_PASSWORD';
+      err.email = cleanEmail;
+      throw err;
     }
 
     // Enforce email verification
@@ -236,6 +242,175 @@ export class AuthService {
       user: res.user,
       token: sessionToken,
     };
+  }
+
+  /**
+   * Generates a password reset token and sends email
+   */
+  public static async requestPasswordReset(
+    email: string,
+    baseUrl: string
+  ): Promise<{ success: boolean; message: string; resetUrl?: string; email: string }> {
+    const cleanEmail = email.toLowerCase().trim();
+    const user = db.getUserByEmail(cleanEmail);
+    if (!user) {
+      const err: any = new Error('Alamat email belum terdaftar di ArahMarket.');
+      err.code = 'USER_NOT_FOUND';
+      err.email = cleanEmail;
+      throw err;
+    }
+
+    const tokenRecord = db.createPasswordResetToken(user.id, user.email, 2);
+    const result = await mailService.sendPasswordResetEmail(
+      user.email,
+      user.name,
+      tokenRecord.token,
+      baseUrl
+    );
+
+    return {
+      success: true,
+      message: 'Tautan pengaturan ulang kata sandi telah dikirim ke email Anda.',
+      resetUrl: result.resetUrl,
+      email: user.email,
+    };
+  }
+
+  /**
+   * Resets user password using valid reset token and logs them in
+   */
+  public static resetPassword(
+    token: string,
+    newPassword: string
+  ): { success: boolean; message: string; user: User; token: string } {
+    if (!newPassword || newPassword.length < 6) {
+      throw new Error('Kata sandi baru minimal harus 6 karakter.');
+    }
+
+    const res = db.consumeToken(token, 'password_reset');
+    if (!res.success || !res.user) {
+      throw new Error(res.error || 'Tautan reset kata sandi tidak valid atau telah kedaluwarsa.');
+    }
+
+    const { hash, salt } = this.hashPassword(newPassword);
+    const updated = db.updateUser(res.user.id, {
+      password_hash: hash,
+      salt,
+      is_verified: true,
+      verification_status: 'verified',
+    });
+
+    if (!updated) {
+      throw new Error('Gagal memperbarui kata sandi pengguna.');
+    }
+
+    const sessionToken = this.generateToken(updated);
+    return {
+      success: true,
+      message: 'Kata sandi berhasil diperbarui! Anda telah otomatis masuk.',
+      user: updated,
+      token: sessionToken,
+    };
+  }
+
+  /**
+   * Passwordless Magic Link Request
+   */
+  public static async requestMagicLink(
+    email: string,
+    baseUrl: string
+  ): Promise<{ success: boolean; message: string; magicUrl?: string; email: string }> {
+    const cleanEmail = email.toLowerCase().trim();
+    let user = db.getUserByEmail(cleanEmail);
+
+    // If user does not exist yet, provision account seamlessly
+    if (!user) {
+      const pass = this.hashPassword(crypto.randomBytes(16).toString('hex'));
+      const userId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      user = {
+        id: userId,
+        email: cleanEmail,
+        password_hash: pass.hash,
+        salt: pass.salt,
+        name: cleanEmail.split('@')[0] || 'Trader',
+        role: 'USER',
+        is_verified: true,
+        verification_status: 'verified',
+        plan: 'FREE',
+        subscription_status: 'active',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      db.insertUser(user);
+    }
+
+    const tokenRecord = db.createMagicLinkToken(user.id, user.email, 1);
+    const result = await mailService.sendMagicLinkEmail(
+      user.email,
+      user.name,
+      tokenRecord.token,
+      baseUrl
+    );
+
+    return {
+      success: true,
+      message: 'Tautan masuk langsung (Magic Link) telah dikirim ke email Anda.',
+      magicUrl: result.magicUrl,
+      email: user.email,
+    };
+  }
+
+  /**
+   * Verifies magic link token and produces session JWT
+   */
+  public static verifyMagicLink(token: string): { success: boolean; user?: User; token?: string; error?: string } {
+    const res = db.consumeToken(token, 'magic_link');
+    if (!res.success || !res.user) {
+      return { success: false, error: res.error || 'Tautan masuk tidak valid atau telah kedaluwarsa.' };
+    }
+
+    const updated = db.updateUser(res.user.id, {
+      is_verified: true,
+      verification_status: 'verified',
+    }) || res.user;
+
+    const sessionToken = this.generateToken(updated);
+    return {
+      success: true,
+      user: updated,
+      token: sessionToken,
+    };
+  }
+
+  /**
+   * Direct password reset by email (for self-recovery / instant reset)
+   */
+  public static directPasswordReset(
+    email: string,
+    newPassword: string
+  ): { success: boolean; user: User; token: string } {
+    const cleanEmail = email.toLowerCase().trim();
+    const user = db.getUserByEmail(cleanEmail);
+    if (!user) {
+      const err: any = new Error('Akun dengan email ini tidak ditemukan.');
+      err.code = 'USER_NOT_FOUND';
+      throw err;
+    }
+    if (!newPassword || newPassword.length < 6) {
+      throw new Error('Kata sandi minimal 6 karakter.');
+    }
+    const { hash, salt } = this.hashPassword(newPassword);
+    const updated = db.updateUser(user.id, {
+      password_hash: hash,
+      salt,
+      is_verified: true,
+      verification_status: 'verified',
+    });
+    if (!updated) {
+      throw new Error('Gagal memperbarui kata sandi.');
+    }
+    const token = this.generateToken(updated);
+    return { success: true, user: updated, token };
   }
 
   /**

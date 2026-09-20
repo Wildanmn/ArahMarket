@@ -1,8 +1,9 @@
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import { config } from './server/config/index.js';
-import { requestLogger, apiRateLimiter, globalErrorHandler } from './server/middleware/index.js';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 import { seedDatabase } from './server/db/seed.js';
 import { db } from './server/db/database.js';
@@ -16,25 +17,37 @@ import { intelligenceRouter } from './server/routes/intelligenceRoutes.js';
 import { userRouter } from './server/routes/userRoutes.js';
 import { adminRouter } from './server/routes/adminRoutes.js';
 import { streamRouter } from './server/routes/streamRoutes.js';
+import { historyRouter } from './server/routes/historyRoutes.js';
 
 import { MarketDataService } from './server/ingestion/marketData.js';
 import { TelegramIngestionService } from './server/ingestion/telegram.js';
 import { CurrencyStrengthService } from './server/ingestion/currencyStrength.js';
 import { MacroDataService } from './server/ingestion/macroData.js';
+import { IntradayMarketMapEngine } from './server/intelligence/intradayMarketMap.js';
 
 async function startServer() {
   const app = express();
-  const PORT = config.port;
+  const PORT = 3000;
 
   // Core middlewares
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true }));
 
   // Request logger for diagnostic tracing
-  app.use(requestLogger);
+  app.use((req, res, next) => {
+    if (req.url.startsWith('/api')) {
+      const start = Date.now();
+      res.on('finish', () => {
+        const duration = Date.now() - start;
+        if (res.statusCode >= 400) {
+          console.warn(`[HTTP] ${req.method} ${req.url} ${res.statusCode} (${duration}ms)`);
+        }
+      });
+    }
+    next();
+  });
 
   // 1. Mount API Routes FIRST
-  app.use('/api', apiRateLimiter);
   app.use('/api/auth', authRouter);
   app.use('/api/markets', marketRouter);
   app.use('/api/news', newsRouter);
@@ -45,6 +58,7 @@ async function startServer() {
   app.use('/api/user', userRouter);
   app.use('/api/admin', adminRouter);
   app.use('/api/stream', streamRouter);
+  app.use('/api/history', historyRouter);
 
   // Unified global synchronization across all ingested elements and external sources
   app.post('/api/sync', async (req, res) => {
@@ -171,6 +185,62 @@ async function startServer() {
         console.warn('[Scheduler] Macro calendar notice:', err.message);
       });
     }, 60000);
+
+    // Automated Daily Market Snapshot Generator (every 10 minutes)
+    setInterval(() => {
+      try {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const existing = db.getDailySnapshotByDate(todayStr);
+        if (!existing) {
+          console.log(`[Scheduler] Generating automated daily snapshot for ${todayStr}...`);
+          // Trigger generation
+          const map = IntradayMarketMapEngine.getIntradayMarketMap();
+          const strengths = db.getCurrencyStrength();
+          const biases: Record<string, any> = {};
+          map.forEach((item: any) => {
+            biases[item.symbol] = {
+              symbol: item.symbol,
+              bias: item.overall_bias,
+              score: item.direction_score,
+              price: item.price,
+              change_24h_pct: item.change_24h_pct,
+              strength_label: item.direction_score > 30 ? 'Strong' : item.direction_score < -30 ? 'Weak' : 'Moderate',
+              major_catalyst: item.today_key_catalyst,
+              last_updated: item.last_updated,
+            };
+          });
+
+          db.saveDailySnapshot({
+            id: `snapshot_${todayStr}`,
+            date: todayStr,
+            timestamp: new Date().toISOString(),
+            title: `Daily Market Snapshot: ${todayStr}`,
+            market_biases: biases,
+            currency_strength: strengths.map((s, idx) => ({
+              currency: s.currency,
+              score: s.strength_score,
+              rank: idx + 1,
+              direction: s.change_direction,
+            })),
+            major_catalysts: map.slice(0, 5).map((m: any) => ({
+              event_name: m.today_key_catalyst,
+              currency: m.symbol === 'XAUUSD' ? 'USD' : m.symbol,
+              impact: 'HIGH',
+              actual: m.current_market_reaction,
+            })),
+            market_reaction_summary: 'Automated end-of-session daily snapshot recorded permanently.',
+            ai_summary: `Multi-asset regime recorded for ${todayStr}.`,
+            ai_why: ['Automated capture of live telemetry into permanent memory database.'],
+            ai_risk: ['Standard session volatility boundaries apply.'],
+            ai_context: [`Archived session ${todayStr}.`],
+            historical_insights: [`Daily snapshot committed to memory.`],
+            created_at: new Date().toISOString(),
+          } as any);
+        }
+      } catch (err: any) {
+        console.warn('[Scheduler] Daily snapshot generation notice:', err.message);
+      }
+    }, 600000);
   } catch (err: any) {
     console.error('[System] Error during server initialization:', err);
   }
@@ -189,9 +259,6 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
-
-  // Global Error Handler must be the last middleware
-  app.use(globalErrorHandler);
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Server] Real-Time Market Intelligence Platform listening on http://0.0.0.0:${PORT}`);

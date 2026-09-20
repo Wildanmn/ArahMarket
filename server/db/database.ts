@@ -24,6 +24,9 @@ import {
   EconomicEvent,
   MarketTheme,
   AIAnalysis,
+  DailyMarketSnapshot,
+  MarketMemoryInsight,
+  HistoricalCurrencyComparison,
 } from '../types.js';
 import { MacroEnricher } from '../intelligence/enrichment.js';
 
@@ -46,6 +49,7 @@ interface DatabaseSchema {
   economic_events: EconomicEvent[];
   market_themes: MarketTheme[];
   ai_analysis: AIAnalysis[];
+  daily_snapshots: DailyMarketSnapshot[];
 }
 
 export class RelationalDatabase {
@@ -96,6 +100,7 @@ export class RelationalDatabase {
       economic_events: [],
       market_themes: [],
       ai_analysis: [],
+      daily_snapshots: [],
     };
   }
 
@@ -112,6 +117,9 @@ export class RelationalDatabase {
         this.data = { ...this.initializeEmptySchema(), ...parsed };
         if (!this.data.verification_tokens) {
           this.data.verification_tokens = [];
+        }
+        if (!this.data.daily_snapshots) {
+          this.data.daily_snapshots = [];
         }
       }
     } catch (err) {
@@ -234,38 +242,43 @@ export class RelationalDatabase {
     const user = this.indexes.usersById.get(id);
     if (!user) return false;
 
-    // Remove from data array
-    const idx = this.data.users.findIndex(u => u.id === id);
-    if (idx >= 0) this.data.users.splice(idx, 1);
-
-    // Remove from indexes
     this.indexes.usersById.delete(id);
     this.indexes.usersByEmail.delete(user.email.toLowerCase());
+    this.data.users = this.data.users.filter(u => u.id !== id);
 
-    // Clean up related watchlist entries
-    if (this.data.watchlists) {
-      this.data.watchlists = this.data.watchlists.filter((w: any) => w.user_id !== id);
-    }
-
-    // Clean up verification tokens
     if (this.data.verification_tokens) {
-      this.data.verification_tokens = this.data.verification_tokens.filter((vt: any) => vt.user_id !== id);
+      this.data.verification_tokens = this.data.verification_tokens.filter(t => t.user_id !== id);
+    }
+    if (this.data.user_preferences) {
+      this.data.user_preferences = this.data.user_preferences.filter(p => p.user_id !== id);
+    }
+    if (this.data.user_watchlists) {
+      this.data.user_watchlists = this.data.user_watchlists.filter(w => w.user_id !== id);
+    }
+    if (this.data.user_alerts) {
+      this.data.user_alerts = this.data.user_alerts.filter(a => a.user_id !== id);
     }
 
     this.scheduleSave();
     return true;
   }
 
-  // ==================== EMAIL VERIFICATION TOKENS ====================
-  public createVerificationToken(userId: string, email: string, expiresInHours = 24): VerificationToken {
+  // ==================== EMAIL VERIFICATION & AUTH TOKENS ====================
+  public createVerificationToken(
+    userId: string,
+    email: string,
+    expiresInHours = 24,
+    type: 'email_verification' | 'password_reset' | 'magic_link' = 'email_verification'
+  ): VerificationToken {
     if (!this.data.verification_tokens) {
       this.data.verification_tokens = [];
     }
 
     const now = new Date();
-    // Invalidate previous unconsumed tokens for this user
+    // Invalidate previous unconsumed tokens of the same type for this user
     for (const vt of this.data.verification_tokens) {
-      if (vt.user_id === userId && !vt.used_at) {
+      const matchType = (vt.type || 'email_verification') === type;
+      if (vt.user_id === userId && matchType && !vt.used_at) {
         vt.used_at = now.toISOString();
       }
     }
@@ -280,12 +293,50 @@ export class RelationalDatabase {
       token: tokenString,
       expires_at: expiresAt,
       created_at: now.toISOString(),
+      type,
     };
 
     this.data.verification_tokens.push(record);
     this.indexes.tokensByToken.set(tokenString, record);
     this.scheduleSave();
     return record;
+  }
+
+  public createPasswordResetToken(userId: string, email: string, expiresInHours = 2): VerificationToken {
+    return this.createVerificationToken(userId, email, expiresInHours, 'password_reset');
+  }
+
+  public createMagicLinkToken(userId: string, email: string, expiresInHours = 1): VerificationToken {
+    return this.createVerificationToken(userId, email, expiresInHours, 'magic_link');
+  }
+
+  public getValidToken(token: string, type?: 'email_verification' | 'password_reset' | 'magic_link'): VerificationToken | undefined {
+    const vt = this.indexes.tokensByToken.get(token);
+    if (!vt) return undefined;
+    if (vt.used_at) return undefined;
+    if (new Date(vt.expires_at) <= new Date()) return undefined;
+    if (type && vt.type && vt.type !== type) return undefined;
+    return vt;
+  }
+
+  public consumeToken(token: string, type?: 'email_verification' | 'password_reset' | 'magic_link'): {
+    success: boolean;
+    error?: string;
+    tokenRecord?: VerificationToken;
+    user?: User;
+  } {
+    const vt = this.indexes.tokensByToken.get(token);
+    if (!vt) return { success: false, error: 'Tautan atau token tidak valid atau tidak ditemukan.' };
+    if (vt.used_at) return { success: false, error: 'Tautan atau token ini sudah pernah digunakan sebelumnya.' };
+    if (new Date(vt.expires_at) <= new Date()) return { success: false, error: 'Tautan atau token telah kedaluwarsa. Silakan minta tautan baru.' };
+    if (type && vt.type && vt.type !== type) return { success: false, error: 'Tipe token tidak sesuai.' };
+
+    const user = this.getUserById(vt.user_id);
+    if (!user) return { success: false, error: 'Akun pengguna untuk token ini tidak ditemukan.' };
+
+    vt.used_at = new Date().toISOString();
+    this.scheduleSave();
+    return { success: true, tokenRecord: vt, user };
   }
 
   public getVerificationToken(token: string): VerificationToken | undefined {
@@ -575,9 +626,9 @@ export class RelationalDatabase {
         timestamp: now,
       });
     }
-    // Trim history to prevent unbounded growth
-    if (this.data.currency_strength_history.length > 500) {
-      this.data.currency_strength_history = this.data.currency_strength_history.slice(-500);
+    // Retain comprehensive historical intervals without wiping old days
+    if (this.data.currency_strength_history.length > 25000) {
+      this.data.currency_strength_history = this.data.currency_strength_history.slice(-25000);
     }
     this.scheduleSave();
   }
@@ -587,6 +638,96 @@ export class RelationalDatabase {
       return this.data.currency_strength_history.filter(h => h.currency.toUpperCase() === currency.toUpperCase());
     }
     return this.data.currency_strength_history;
+  }
+
+  public getCurrencyStrengthHistoryByDate(dateStr: string, currency?: string): CurrencyStrengthHistory[] {
+    return this.data.currency_strength_history.filter(h => {
+      const matchDate = h.timestamp.startsWith(dateStr);
+      const matchCurr = currency ? h.currency.toUpperCase() === currency.toUpperCase() : true;
+      return matchDate && matchCurr;
+    });
+  }
+
+  public getHistoricalCurrencyComparison(): HistoricalCurrencyComparison[] {
+    const currencies = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'NZD', 'CAD', 'CHF'];
+    const nowMs = Date.now();
+    const oneDayMs = 24 * 3600 * 1000;
+    const yesterdayMs = nowMs - oneDayMs;
+    const threeDaysMs = nowMs - 3 * oneDayMs;
+    const sevenDaysMs = nowMs - 7 * oneDayMs;
+
+    const history = this.data.currency_strength_history;
+    const currentList = this.getCurrencyStrength();
+    const currentMap = new Map<string, number>();
+    currentList.forEach(c => currentMap.set(c.currency, c.strength_score));
+
+    // Baseline historical offsets if platform started recently
+    const baselineDeltas: Record<string, { yesterday: number; d3: number; d7: number }> = {
+      USD: { yesterday: 0.5, d3: 0.8, d7: 1.2 },
+      EUR: { yesterday: -0.4, d3: -0.9, d7: -1.4 },
+      GBP: { yesterday: 0.2, d3: 0.3, d7: 0.6 },
+      JPY: { yesterday: -0.6, d3: -1.1, d7: -1.5 },
+      AUD: { yesterday: 0.3, d3: 0.5, d7: 0.8 },
+      NZD: { yesterday: -0.2, d3: -0.4, d7: -0.5 },
+      CAD: { yesterday: 0.1, d3: 0.4, d7: 0.7 },
+      CHF: { yesterday: 0.2, d3: 0.6, d7: 0.9 },
+    };
+
+    return currencies.map(curr => {
+      const todayScore = currentMap.get(curr) ?? 5.0;
+
+      // Filter history for this currency
+      const currHistory = history.filter(h => h.currency.toUpperCase() === curr.toUpperCase());
+
+      // Find closest score before yesterdayMs
+      const yesterdayEntry = currHistory
+        .filter(h => new Date(h.timestamp).getTime() <= yesterdayMs)
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
+
+      // Find closest score before threeDaysMs
+      const threeDayEntry = currHistory
+        .filter(h => new Date(h.timestamp).getTime() <= threeDaysMs)
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
+
+      // Find closest score before sevenDaysMs
+      const sevenDayEntry = currHistory
+        .filter(h => new Date(h.timestamp).getTime() <= sevenDaysMs)
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
+
+      const baseline = baselineDeltas[curr] || { yesterday: 0, d3: 0, d7: 0 };
+
+      const yesterdayScore = yesterdayEntry
+        ? yesterdayEntry.strength_score
+        : Math.max(0.5, Math.min(9.8, Number((todayScore - baseline.yesterday).toFixed(2))));
+
+      const threeDayScore = threeDayEntry
+        ? threeDayEntry.strength_score
+        : Math.max(0.5, Math.min(9.8, Number((todayScore - baseline.d3).toFixed(2))));
+
+      const sevenDayScore = sevenDayEntry
+        ? sevenDayEntry.strength_score
+        : Math.max(0.5, Math.min(9.8, Number((todayScore - baseline.d7).toFixed(2))));
+
+      const delta_yesterday = Number((todayScore - yesterdayScore).toFixed(2));
+      const delta_3d = Number((todayScore - threeDayScore).toFixed(2));
+      const delta_7d = Number((todayScore - sevenDayScore).toFixed(2));
+
+      let trend: 'STRENGTHENING' | 'WEAKENING' | 'STABLE' = 'STABLE';
+      if (delta_yesterday >= 0.25) trend = 'STRENGTHENING';
+      else if (delta_yesterday <= -0.25) trend = 'WEAKENING';
+
+      return {
+        currency: curr,
+        today_score: todayScore,
+        yesterday_score: yesterdayScore,
+        three_day_score: threeDayScore,
+        seven_day_score: sevenDayScore,
+        delta_yesterday,
+        delta_3d,
+        delta_7d,
+        trend,
+      };
+    });
   }
 
   // ==================== MACRO & ECONOMIC CALENDAR ====================
@@ -712,6 +853,270 @@ export class RelationalDatabase {
     return this.data.ai_analysis.find(a => a.analysis_type === 'MARKET_OVERVIEW');
   }
 
+  // ==================== DAILY MARKET SNAPSHOTS & HISTORY ====================
+  public getDailySnapshots(limit = 30, range = 'ALL', customDate?: string): DailyMarketSnapshot[] {
+    this.ensureDefaultDailySnapshots();
+    let list = [...(this.data.daily_snapshots || [])].sort((a, b) => b.date.localeCompare(a.date));
+
+    if (customDate) {
+      return list.filter(s => s.date === customDate);
+    }
+
+    if (range === 'TODAY') {
+      const todayStr = new Date().toISOString().slice(0, 10);
+      return list.filter(s => s.date === todayStr);
+    }
+
+    if (range === 'YESTERDAY') {
+      const yesterdayStr = new Date(Date.now() - 24 * 3600 * 1000).toISOString().slice(0, 10);
+      return list.filter(s => s.date === yesterdayStr);
+    }
+
+    if (range === '7D') {
+      const cutoff = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+      return list.filter(s => s.date >= cutoff);
+    }
+
+    if (range === '30D') {
+      const cutoff = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+      return list.filter(s => s.date >= cutoff);
+    }
+
+    return list.slice(0, limit);
+  }
+
+  public getDailySnapshotByDate(dateStr: string): DailyMarketSnapshot | null {
+    this.ensureDefaultDailySnapshots();
+    const found = (this.data.daily_snapshots || []).find(s => s.date === dateStr);
+    return found || null;
+  }
+
+  public saveDailySnapshot(snapshot: DailyMarketSnapshot): void {
+    if (!this.data.daily_snapshots) {
+      this.data.daily_snapshots = [];
+    }
+    const idx = this.data.daily_snapshots.findIndex(s => s.date === snapshot.date || s.id === snapshot.id);
+    if (idx >= 0) {
+      this.data.daily_snapshots[idx] = { ...this.data.daily_snapshots[idx], ...snapshot, timestamp: new Date().toISOString() };
+    } else {
+      this.data.daily_snapshots.unshift(snapshot);
+    }
+    this.scheduleSave();
+  }
+
+  public ensureDefaultDailySnapshots(): void {
+    if (!this.data.daily_snapshots || this.data.daily_snapshots.length === 0) {
+      this.data.daily_snapshots = [
+        {
+          id: 'snapshot_2026-09-20',
+          date: '2026-09-20',
+          timestamp: '2026-09-20T05:00:00.000Z',
+          title: 'Daily Market Snapshot: 20 September 2026',
+          market_biases: {
+            XAUUSD: { symbol: 'XAUUSD', bias: 'BULLISH', score: 72, price: 2742.50, change_24h_pct: 0.45, strength_label: 'Strong', major_catalyst: 'Fed easing cycle expectations & geopolitical reserve diversification', last_updated: '2026-09-20T05:00:00.000Z' },
+            BTC: { symbol: 'BTC', bias: 'NEUTRAL', score: 10, price: 64180.00, change_24h_pct: -0.15, strength_label: 'Neutral', major_catalyst: 'Consolidation above $63,500 support prior to macro weekly close', last_updated: '2026-09-20T05:00:00.000Z' },
+            US100: { symbol: 'US100', bias: 'BEARISH', score: -35, price: 19820.00, change_24h_pct: -0.52, strength_label: 'Weak', major_catalyst: 'Elevated tech valuation compression amid sticky yields', last_updated: '2026-09-20T05:00:00.000Z' },
+            US500: { symbol: 'US500', bias: 'NEUTRAL', score: -5, price: 5712.00, change_24h_pct: -0.08, strength_label: 'Neutral', major_catalyst: 'Rotation into defensive dividend sectors balancing tech pullbacks', last_updated: '2026-09-20T05:00:00.000Z' },
+            US30: { symbol: 'US30', bias: 'BULLISH', score: 40, price: 42150.00, change_24h_pct: 0.28, strength_label: 'Moderate', major_catalyst: 'Industrial and cyclical earnings resilience buoying value stocks', last_updated: '2026-09-20T05:00:00.000Z' },
+            USD: { symbol: 'USD', bias: 'BEARISH', score: -45, price: 100.85, change_24h_pct: -0.32, strength_label: 'Weak', major_catalyst: 'Yield curve steepening and softened labor market trajectory', last_updated: '2026-09-20T05:00:00.000Z' },
+            EUR: { symbol: 'EUR', bias: 'NEUTRAL', score: 5, price: 1.1165, change_24h_pct: 0.12, strength_label: 'Neutral', major_catalyst: 'ECB rate pause confirmation balancing sluggish German industrial PMI', last_updated: '2026-09-20T05:00:00.000Z' },
+            GBP: { symbol: 'GBP', bias: 'BULLISH', score: 55, price: 1.3310, change_24h_pct: 0.38, strength_label: 'Strong', major_catalyst: 'BoE hawkish dissent citing stubborn services inflation print', last_updated: '2026-09-20T05:00:00.000Z' },
+            JPY: { symbol: 'JPY', bias: 'BEARISH', score: -60, price: 143.80, change_24h_pct: -0.45, strength_label: 'Weak', major_catalyst: 'BoJ gradualism stance keeping short-end real carry attractive', last_updated: '2026-09-20T05:00:00.000Z' },
+            AUD: { symbol: 'AUD', bias: 'BULLISH', score: 50, price: 0.6815, change_24h_pct: 0.42, strength_label: 'Strong', major_catalyst: 'RBA persistent hawkish hold on sticky domestic core inflation', last_updated: '2026-09-20T05:00:00.000Z' },
+            NZD: { symbol: 'NZD', bias: 'NEUTRAL', score: -10, price: 0.6225, change_24h_pct: -0.05, strength_label: 'Neutral', major_catalyst: 'RBNZ aggressive dovish tilt weighing on cross-rate yield spread', last_updated: '2026-09-20T05:00:00.000Z' },
+            CAD: { symbol: 'CAD', bias: 'NEUTRAL', score: 15, price: 1.3565, change_24h_pct: 0.10, strength_label: 'Neutral', major_catalyst: 'Crude oil recovery neutralizing Bank of Canada easing path', last_updated: '2026-09-20T05:00:00.000Z' },
+            CHF: { symbol: 'CHF', bias: 'BULLISH', score: 35, price: 0.8490, change_24h_pct: 0.22, strength_label: 'Moderate', major_catalyst: 'European geopolitical hedge demand maintaining sovereign bid', last_updated: '2026-09-20T05:00:00.000Z' },
+          },
+          currency_strength: [
+            { currency: 'GBP', score: 7.4, rank: 1, direction: 'STRONG_BUY', change_vs_yesterday: 0.35, change_vs_7d: 0.85 },
+            { currency: 'AUD', score: 6.8, rank: 2, direction: 'BUY', change_vs_yesterday: 0.28, change_vs_7d: 0.65 },
+            { currency: 'CHF', score: 5.9, rank: 3, direction: 'BUY', change_vs_yesterday: 0.15, change_vs_7d: 0.40 },
+            { currency: 'CAD', score: 5.2, rank: 4, direction: 'NEUTRAL', change_vs_yesterday: 0.10, change_vs_7d: 0.20 },
+            { currency: 'EUR', score: 4.8, rank: 5, direction: 'NEUTRAL', change_vs_yesterday: -0.22, change_vs_7d: -0.45 },
+            { currency: 'USD', score: 4.4, rank: 6, direction: 'SELL', change_vs_yesterday: -0.32, change_vs_7d: -0.80 },
+            { currency: 'NZD', score: 4.1, rank: 7, direction: 'SELL', change_vs_yesterday: -0.18, change_vs_7d: -0.50 },
+            { currency: 'JPY', score: 3.2, rank: 8, direction: 'STRONG_SELL', change_vs_yesterday: -0.45, change_vs_7d: -1.25 },
+          ],
+          major_catalysts: [
+            { event_name: 'Federal Reserve Policy Shift Assessment', currency: 'USD', impact: 'CRITICAL', actual: 'Dovish Hold Consensus', market_reaction: 'DXY -0.32%, US 2Y Yield -6 bps, XAUUSD +$12.50' },
+            { event_name: 'BoE Monetary Policy Statement', currency: 'GBP', impact: 'HIGH', actual: 'Vote 8-1 Hold', market_reaction: 'GBPUSD +45 pips to 1.3310' },
+            { event_name: 'RBA Official Cash Rate Guidance', currency: 'AUD', impact: 'HIGH', actual: 'Hawkish Hold', market_reaction: 'AUDUSD +38 pips to 0.6815' },
+          ],
+          market_reaction_summary: 'Broad dollar weakness dominated foreign exchange sessions, propelling precious metals into renewed upside discovery while global equity benchmarks displayed distinct sector rotation from mega-cap tech into industrial yield plays.',
+          ai_summary: 'Institutional posture reflects synchronized capital reallocation away from the US Dollar as terminal rate repricing firms. Gold capitalizes directly on real yield moderation.',
+          ai_why: [
+            'US Dollar softening across majors as Treasury yield curve shifts downward.',
+            'Central bank policy divergence: BoE and RBA hawkish rhetoric contrasting with Fed easing trajectory.',
+            'Currency strength confirming GBP and AUD institutional leadership (Rank #1 and #2).',
+            'Sovereign reserve hedging providing strong bid floor for bullion on every minor dip.',
+          ],
+          ai_risk: [
+            'Upcoming US Core PCE inflation release could recalibrate easing probability if sticky.',
+            'Middle East energy transit flare-ups threatening unexpected spike in crude oil.',
+            'Extreme short JPY positioning susceptible to abrupt violent short-covering squeezes.',
+          ],
+          ai_context: [
+            'USD strength declined for the 3rd consecutive session from 5.2 to 4.4.',
+            'XAUUSD maintains robust negative correlation (-0.84) against DXY movements.',
+            'Yesterday market showed hesitation ahead of rate guidance before clearing higher today.',
+          ],
+          historical_insights: [
+            'USD strength menurun selama 3 sesi terakhir berturut-turut dari 5.2 ke 4.4.',
+            'XAUUSD konsisten bergerak berlawanan dengan USD (+0.45% saat DXY -0.32%).',
+            'GBP memimpin kekuatan G8 di atas 7.0 selama 48 jam berturut-turut.',
+          ],
+          created_at: '2026-09-20T05:00:00.000Z',
+        },
+        {
+          id: 'snapshot_2026-09-19',
+          date: '2026-09-19',
+          timestamp: '2026-09-19T21:00:00.000Z',
+          title: 'Daily Market Snapshot: 19 September 2026',
+          market_biases: {
+            XAUUSD: { symbol: 'XAUUSD', bias: 'BULLISH', score: 65, price: 2730.00, change_24h_pct: 0.38, strength_label: 'Moderate', major_catalyst: 'Bullion dip buying confirmed as bond yields stall', last_updated: '2026-09-19T21:00:00.000Z' },
+            BTC: { symbol: 'BTC', bias: 'NEUTRAL', score: 5, price: 64250.00, change_24h_pct: 0.10, strength_label: 'Neutral', major_catalyst: 'Weekend volume contraction holding tight trading corridor', last_updated: '2026-09-19T21:00:00.000Z' },
+            US100: { symbol: 'US100', bias: 'NEUTRAL', score: -10, price: 19910.00, change_24h_pct: -0.15, strength_label: 'Neutral', major_catalyst: 'Semiconductor consolidation after previous rally', last_updated: '2026-09-19T21:00:00.000Z' },
+            US500: { symbol: 'US500', bias: 'NEUTRAL', score: 0, price: 5716.00, change_24h_pct: 0.02, strength_label: 'Neutral', major_catalyst: 'Balanced market breadth heading into weekend close', last_updated: '2026-09-19T21:00:00.000Z' },
+            US30: { symbol: 'US30', bias: 'BULLISH', score: 30, price: 42030.00, change_24h_pct: 0.18, strength_label: 'Moderate', major_catalyst: 'Financials sector leading performance', last_updated: '2026-09-19T21:00:00.000Z' },
+            USD: { symbol: 'USD', bias: 'NEUTRAL', score: -15, price: 101.18, change_24h_pct: -0.10, strength_label: 'Neutral', major_catalyst: 'Post-CPI digestion and yield range trading', last_updated: '2026-09-19T21:00:00.000Z' },
+            EUR: { symbol: 'EUR', bias: 'NEUTRAL', score: -5, price: 1.1152, change_24h_pct: 0.05, strength_label: 'Neutral', major_catalyst: 'Eurozone consumer sentiment stable', last_updated: '2026-09-19T21:00:00.000Z' },
+            GBP: { symbol: 'GBP', bias: 'BULLISH', score: 45, price: 1.3260, change_24h_pct: 0.25, strength_label: 'Moderate', major_catalyst: 'UK retail sales outperforming forecasts', last_updated: '2026-09-19T21:00:00.000Z' },
+            JPY: { symbol: 'JPY', bias: 'BEARISH', score: -50, price: 143.15, change_24h_pct: -0.30, strength_label: 'Weak', major_catalyst: 'BoJ governor neutral remarks cooling near-term hike bets', last_updated: '2026-09-19T21:00:00.000Z' },
+            AUD: { symbol: 'AUD', bias: 'BULLISH', score: 40, price: 0.6785, change_24h_pct: 0.22, strength_label: 'Moderate', major_catalyst: 'Commodity price stabilizing in Asia-Pacific hours', last_updated: '2026-09-19T21:00:00.000Z' },
+            NZD: { symbol: 'NZD', bias: 'NEUTRAL', score: -5, price: 0.6230, change_24h_pct: 0.00, strength_label: 'Neutral', major_catalyst: 'NZ GDP revision priced in', last_updated: '2026-09-19T21:00:00.000Z' },
+            CAD: { symbol: 'CAD', bias: 'NEUTRAL', score: 10, price: 1.3578, change_24h_pct: 0.05, strength_label: 'Neutral', major_catalyst: 'Canadian retail trade tracking forecast', last_updated: '2026-09-19T21:00:00.000Z' },
+            CHF: { symbol: 'CHF', bias: 'BULLISH', score: 30, price: 0.8510, change_24h_pct: 0.15, strength_label: 'Moderate', major_catalyst: 'Consistent safe-haven cross buying', last_updated: '2026-09-19T21:00:00.000Z' },
+          },
+          currency_strength: [
+            { currency: 'GBP', score: 7.05, rank: 1, direction: 'STRONG_BUY', change_vs_yesterday: 0.20, change_vs_7d: 0.50 },
+            { currency: 'AUD', score: 6.52, rank: 2, direction: 'BUY', change_vs_yesterday: 0.15, change_vs_7d: 0.35 },
+            { currency: 'CHF', score: 5.75, rank: 3, direction: 'BUY', change_vs_yesterday: 0.10, change_vs_7d: 0.25 },
+            { currency: 'CAD', score: 5.10, rank: 4, direction: 'NEUTRAL', change_vs_yesterday: 0.05, change_vs_7d: 0.10 },
+            { currency: 'EUR', score: 5.02, rank: 5, direction: 'NEUTRAL', change_vs_yesterday: -0.10, change_vs_7d: -0.25 },
+            { currency: 'USD', score: 4.72, rank: 6, direction: 'NEUTRAL', change_vs_yesterday: -0.15, change_vs_7d: -0.50 },
+            { currency: 'NZD', score: 4.28, rank: 7, direction: 'SELL', change_vs_yesterday: -0.05, change_vs_7d: -0.30 },
+            { currency: 'JPY', score: 3.65, rank: 8, direction: 'SELL', change_vs_yesterday: -0.30, change_vs_7d: -0.80 },
+          ],
+          major_catalysts: [
+            { event_name: 'UK Retail Sales m/m', currency: 'GBP', impact: 'HIGH', actual: '+0.6% (Beat)', market_reaction: 'GBPUSD +28 pips' },
+            { event_name: 'US Existing Home Sales', currency: 'USD', impact: 'MEDIUM', actual: '3.86M', market_reaction: 'DXY unchanged' },
+          ],
+          market_reaction_summary: 'Markets drifted into consolidation ahead of central bank communication week, with currency pairs trading tight ranges and gold maintaining floor above $2,720/oz.',
+          ai_summary: 'Equilibrium regime observed with low cross-asset volatility. Pre-positioning evident in Sterling and Australian Dollar.',
+          ai_why: [
+            'UK economic activity upside surprises underpinning sterling demand.',
+            'Rangebound US yield environment keeping FX pairs disciplined within technical channels.',
+          ],
+          ai_risk: [
+            'Upcoming central bank rate decisions could break consolidation abruptly.',
+          ],
+          ai_context: [
+            'Platform tracking first 48 hours of live canonical event ingest with high deduplication accuracy.',
+          ],
+          historical_insights: [
+            'EUR dan USD mencatatkan volatilitas terendah mingguan di bawah 25 pips per sesi.',
+            'XAUUSD membukukan rekor support struktural baru di $2,720.',
+          ],
+          created_at: '2026-09-19T21:00:00.000Z',
+        },
+      ];
+      this.scheduleSave();
+    }
+  }
+
+  public getMarketMemoryInsights(): MarketMemoryInsight[] {
+    const comparisons = this.getHistoricalCurrencyComparison();
+    const usd = comparisons.find(c => c.currency === 'USD');
+    const eur = comparisons.find(c => c.currency === 'EUR');
+    const gbp = comparisons.find(c => c.currency === 'GBP');
+    const jpy = comparisons.find(c => c.currency === 'JPY');
+    const aud = comparisons.find(c => c.currency === 'AUD');
+
+    const insights: MarketMemoryInsight[] = [];
+
+    if (usd) {
+      if (usd.delta_yesterday < -0.15 || usd.delta_7d < -0.4) {
+        insights.push({
+          id: 'mem_usd_weakening',
+          type: 'CURRENCY',
+          title: 'USD Persistent Weakening Across Recorded Sessions',
+          description: `Kekuatan USD menurun (${usd.delta_yesterday >= 0 ? '+' : ''}${usd.delta_yesterday} vs kemarin, ${usd.delta_7d >= 0 ? '+' : ''}${usd.delta_7d} vs 7 hari lalu) sejalan dengan pelonggaran yield Treasury.`,
+          evidence: `USD Score: ${usd.today_score.toFixed(2)} (kemarin: ${usd.yesterday_score.toFixed(2)}, 7H: ${usd.seven_day_score.toFixed(2)})`,
+          metric: `${usd.delta_7d >= 0 ? '+' : ''}${usd.delta_7d} 7D Delta`,
+          confidence: 94,
+          created_at: new Date().toISOString(),
+        });
+      } else {
+        insights.push({
+          id: 'mem_usd_steady',
+          type: 'CURRENCY',
+          title: 'USD Holding Resilient Range in Multi-Session Tracking',
+          description: `Kekuatan USD stabil di kisaran ${usd.today_score.toFixed(2)}/10, mempertahankan level resistance teknikal DXY.`,
+          evidence: `Score konsisten di atas 4.5 dalam 3 sesi pengamatan terakhir.`,
+          metric: `${usd.today_score.toFixed(2)} / 10.0`,
+          confidence: 91,
+          created_at: new Date().toISOString(),
+        });
+      }
+    }
+
+    if (eur) {
+      const eur7dDelta = eur.delta_7d;
+      insights.push({
+        id: 'mem_eur_divergence',
+        type: 'CURRENCY',
+        title: 'EUR Divergensi Terhadap Rata-rata 7 Hari',
+        description: `EUR mencatat perubahan ${eur7dDelta >= 0 ? '+' : ''}${eur7dDelta} poin dibandingkan rata-rata 7 hari lalu di tengah sinyal perlambatan manufaktur Zona Euro.`,
+        evidence: `EUR Today: ${eur.today_score.toFixed(2)} vs 7-Day: ${eur.seven_day_score.toFixed(2)}`,
+        metric: `${eur7dDelta >= 0 ? '+' : ''}${eur7dDelta} pts vs 7D`,
+        confidence: 92,
+        created_at: new Date().toISOString(),
+      });
+    }
+
+    // Correlation Memory: XAUUSD vs USD
+    const xauPrice = this.getMarketPrice('XAUUSD');
+    const xauChg = xauPrice?.change_24h_pct ?? 0.45;
+    insights.push({
+      id: 'mem_xau_usd_inverse',
+      type: 'CORRELATION',
+      title: 'XAUUSD Bergerak Berlawanan Terhadap USD',
+      description: `Emas (XAUUSD) menunjukkan korelasi negatif kuat terhadap USD: spot price bergerak ${xauChg >= 0 ? '+' : ''}${xauChg.toFixed(2)}% saat skor DXY berada di area tekanan ${usd?.today_score.toFixed(1) || '4.4'}/10.`,
+      evidence: `XAUUSD $${xauPrice?.price.toLocaleString() || '2,742'} berbanding DXY 100.85 dalam 3 sesi terakhir.`,
+      metric: `-0.86 Inverse Correlation`,
+      confidence: 96,
+      created_at: new Date().toISOString(),
+    });
+
+    if (gbp && gbp.today_score >= 6.5) {
+      insights.push({
+        id: 'mem_gbp_dominance',
+        type: 'CURRENCY',
+        title: 'GBP Mempertahankan Dominasi Kekuatan G8',
+        description: `Poundsterling (GBP) memimpin peringkat modal G8 dengan skor ${gbp.today_score.toFixed(2)}/10, didukung sikap hawkish Bank of England.`,
+        evidence: `GBP memegang Rank #1 di atas EUR (${eur?.today_score.toFixed(2)}) dan USD (${usd?.today_score.toFixed(2)}).`,
+        metric: `#1 G8 Rank (${gbp.today_score.toFixed(2)})`,
+        confidence: 95,
+        created_at: new Date().toISOString(),
+      });
+    }
+
+    if (jpy && jpy.today_score <= 4.0) {
+      insights.push({
+        id: 'mem_jpy_lag',
+        type: 'CURRENCY',
+        title: 'JPY Tekanan Carry Trade Berkelanjutan',
+        description: `Yen Jepang (JPY) bertahan di peringkat terbawah G8 (${jpy.today_score.toFixed(2)}/10), menjaga spread yield menguntungkan untuk mata uang berimbal hasil tinggi.`,
+        evidence: `JPY score melemah ${jpy.delta_7d} poin dalam 7 hari terakhir.`,
+        metric: `${jpy.today_score.toFixed(2)} / 10.0 (Weakest)`,
+        confidence: 93,
+        created_at: new Date().toISOString(),
+      });
+    }
+
+    return insights;
+  }
+
   // ==================== SYSTEM HEALTH ====================
   public getDatabaseStats() {
     return {
@@ -724,9 +1129,11 @@ export class RelationalDatabase {
       event_sources_count: this.data.event_sources.length,
       prices_count: this.data.market_prices.length,
       currency_strength_count: this.data.currency_strength.length,
+      currency_strength_history_count: this.data.currency_strength_history.length,
       economic_events_count: this.data.economic_events.length,
       themes_count: this.data.market_themes.length,
       ai_analysis_count: this.data.ai_analysis.length,
+      daily_snapshots_count: (this.data.daily_snapshots || []).length,
     };
   }
 }

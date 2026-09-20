@@ -7,7 +7,8 @@ import { CurrencyStrengthService } from '../ingestion/currencyStrength.js';
 import { MacroDataService } from '../ingestion/macroData.js';
 import { processNewsThroughPipeline } from '../ingestion/pipeline.js';
 import { sseBroker } from '../realtime/sse.js';
-import { requireAdmin, AuthenticatedRequest } from '../auth/authService.js';
+import { requireAdmin, AuthenticatedRequest, AuthService } from '../auth/authService.js';
+import { mailService } from '../services/mailService.js';
 
 export const adminRouter = Router();
 
@@ -247,26 +248,145 @@ adminRouter.post('/ingest/run-all', async (req, res) => {
   }
 });
 
-// 7. User & Subscription Management (Admin Only)
+// 7. User & Access Management (Admin Only)
 adminRouter.get('/users', (req: Request, res: Response) => {
-  const users = db.getAllUsers().map(u => ({
+  const { search, role, plan, status, verified } = req.query;
+  let allUsers = db.getAllUsers();
+
+  const total = allUsers.length;
+  const verifiedCount = allUsers.filter(u => u.is_verified).length;
+  const adminCount = allUsers.filter(u => u.role === 'ADMIN').length;
+  const proCount = allUsers.filter(u => u.plan === 'PRO').length;
+  const institutionalCount = allUsers.filter(u => u.plan === 'INSTITUTIONAL').length;
+
+  if (search && typeof search === 'string') {
+    const q = search.toLowerCase().trim();
+    allUsers = allUsers.filter(u =>
+      u.email.toLowerCase().includes(q) ||
+      u.name.toLowerCase().includes(q) ||
+      u.id.toLowerCase().includes(q)
+    );
+  }
+
+  if (role && role !== 'ALL') {
+    allUsers = allUsers.filter(u => u.role === role);
+  }
+
+  if (plan && plan !== 'ALL') {
+    allUsers = allUsers.filter(u => (u.plan || 'FREE') === plan);
+  }
+
+  if (status && status !== 'ALL') {
+    allUsers = allUsers.filter(u => (u.subscription_status || 'active') === status);
+  }
+
+  if (verified && verified !== 'ALL') {
+    const isV = verified === 'true';
+    allUsers = allUsers.filter(u => Boolean(u.is_verified) === isV);
+  }
+
+  const users = allUsers.map(u => ({
     id: u.id,
     email: u.email,
     name: u.name,
     role: u.role,
     is_verified: u.is_verified,
+    verification_status: u.verification_status,
     plan: u.plan || 'FREE',
     subscription_status: u.subscription_status || 'active',
     subscription_expires_at: u.subscription_expires_at,
     created_at: u.created_at,
     updated_at: u.updated_at,
   }));
-  res.json({ users, count: users.length });
+
+  res.json({
+    users,
+    count: users.length,
+    metrics: {
+      total,
+      verified: verifiedCount,
+      unverified: total - verifiedCount,
+      admins: adminCount,
+      pro: proCount,
+      institutional: institutionalCount,
+      free: total - (proCount + institutionalCount),
+    },
+  });
 });
 
-adminRouter.patch('/users/:id', (req: Request, res: Response) => {
+// Admin Create New User
+adminRouter.post('/users', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { name, email, password, role, plan, subscription_status, is_verified } = req.body;
+    if (!email || !email.includes('@')) {
+      res.status(400).json({ error: 'Valid email address is required.' });
+      return;
+    }
+
+    const cleanEmail = email.toLowerCase().trim();
+    const existing = db.getUserByEmail(cleanEmail);
+    if (existing) {
+      res.status(400).json({ error: `User with email ${cleanEmail} already exists.` });
+      return;
+    }
+
+    const effectivePassword = password && password.length >= 6 ? password : `Pass_${Math.random().toString(36).slice(-8)}!`;
+    const { hash, salt } = AuthService.hashPassword(effectivePassword);
+    const userId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+    const newUser: any = {
+      id: userId,
+      email: cleanEmail,
+      password_hash: hash,
+      salt,
+      name: (name || cleanEmail.split('@')[0] || 'Trader').trim(),
+      role: role === 'ADMIN' ? 'ADMIN' : 'USER',
+      is_verified: is_verified !== undefined ? Boolean(is_verified) : true,
+      verification_status: is_verified !== false ? 'verified' : 'pending_verification',
+      plan: ['FREE', 'PRO', 'INSTITUTIONAL'].includes(plan) ? plan : 'FREE',
+      subscription_status: subscription_status || 'active',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    db.insertUser(newUser);
+
+    db.upsertUserPreferences({
+      user_id: userId,
+      timezone: 'UTC',
+      language: 'en',
+      theme: 'dark',
+      default_market_view: 'XAUUSD',
+      density: 'compact',
+      audio_alerts: false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    res.status(201).json({
+      success: true,
+      user: {
+        id: newUser.id,
+        email: newUser.email,
+        name: newUser.name,
+        role: newUser.role,
+        is_verified: newUser.is_verified,
+        plan: newUser.plan,
+        subscription_status: newUser.subscription_status,
+        created_at: newUser.created_at,
+        updated_at: newUser.updated_at,
+      },
+      initial_password: password ? undefined : effectivePassword,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to create user.' });
+  }
+});
+
+// Admin Update User Details & Access
+adminRouter.patch('/users/:id', (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
-  const { role, plan, subscription_status } = req.body;
+  const { name, email, role, plan, subscription_status, is_verified } = req.body;
 
   const target = db.getUserById(id);
   if (!target) {
@@ -274,7 +394,30 @@ adminRouter.patch('/users/:id', (req: Request, res: Response) => {
     return;
   }
 
+  // Prevent demoting the last remaining admin
+  if (target.role === 'ADMIN' && role === 'USER') {
+    const adminCount = db.getAllUsers().filter(u => u.role === 'ADMIN').length;
+    if (adminCount <= 1) {
+      res.status(400).json({ error: 'Cannot demote the only remaining administrator.' });
+      return;
+    }
+  }
+
   const updates: any = {};
+  if (name && typeof name === 'string') {
+    updates.name = name.trim();
+  }
+  if (email && typeof email === 'string' && email.includes('@')) {
+    const cleanEmail = email.toLowerCase().trim();
+    if (cleanEmail !== target.email.toLowerCase()) {
+      const exists = db.getUserByEmail(cleanEmail);
+      if (exists) {
+        res.status(400).json({ error: 'Another user already uses this email.' });
+        return;
+      }
+      updates.email = cleanEmail;
+    }
+  }
   if (role && ['USER', 'ADMIN'].includes(role)) {
     updates.role = role;
   }
@@ -283,6 +426,10 @@ adminRouter.patch('/users/:id', (req: Request, res: Response) => {
   }
   if (subscription_status && ['active', 'trialing', 'canceled', 'expired'].includes(subscription_status)) {
     updates.subscription_status = subscription_status;
+  }
+  if (is_verified !== undefined) {
+    updates.is_verified = Boolean(is_verified);
+    updates.verification_status = Boolean(is_verified) ? 'verified' : 'pending_verification';
   }
 
   const updated = db.updateUser(id, updates);
@@ -294,6 +441,7 @@ adminRouter.patch('/users/:id', (req: Request, res: Response) => {
       name: updated?.name,
       role: updated?.role,
       is_verified: updated?.is_verified,
+      verification_status: updated?.verification_status,
       plan: updated?.plan,
       subscription_status: updated?.subscription_status,
       created_at: updated?.created_at,
@@ -302,37 +450,158 @@ adminRouter.patch('/users/:id', (req: Request, res: Response) => {
   });
 });
 
-// 8. Delete User (Admin Only)
-adminRouter.delete('/users/:id', (req: Request, res: Response) => {
+// Admin Delete User
+adminRouter.delete('/users/:id', (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
-  const authReq = req as AuthenticatedRequest;
+  const target = db.getUserById(id);
 
-  // Prevent admin from deleting themselves
-  if (authReq.user && authReq.user.id === id) {
-    res.status(400).json({ error: 'Tidak bisa menghapus akun sendiri.' });
+  if (!target) {
+    res.status(404).json({ error: 'User not found.' });
     return;
   }
+
+  // Prevent admin from deleting themselves
+  if (req.user && req.user.id === id) {
+    res.status(400).json({
+      error: 'Cannot delete your own active administrator account.',
+    });
+    return;
+  }
+
+  // Prevent deleting the last remaining admin
+  if (target.role === 'ADMIN') {
+    const remainingAdmins = db.getAllUsers().filter(u => u.role === 'ADMIN' && u.id !== id);
+    if (remainingAdmins.length === 0) {
+      res.status(400).json({
+        error: 'Cannot delete the only remaining administrator account in the system.',
+      });
+      return;
+    }
+  }
+
+  const email = target.email;
+  const success = db.deleteUser(id);
+  if (!success) {
+    res.status(500).json({ error: 'Failed to delete user from database.' });
+    return;
+  }
+
+  res.json({
+    success: true,
+    message: `Akun user ${email} berhasil dihapus permanen beserta seluruh preferensi & watchlist-nya.`,
+    deleted_id: id,
+  });
+});
+
+// Admin Force Password Reset
+adminRouter.post('/users/:id/reset-password', (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const { new_password } = req.body;
 
   const target = db.getUserById(id);
   if (!target) {
-    res.status(404).json({ error: 'User tidak ditemukan.' });
+    res.status(404).json({ error: 'User not found.' });
     return;
   }
 
-  // Prevent deleting other admins (safety)
-  if (target.role === 'ADMIN') {
-    res.status(403).json({ error: 'Tidak bisa menghapus akun admin lain. Ubah role ke USER terlebih dahulu.' });
-    return;
-  }
+  const passToSet = (new_password && typeof new_password === 'string' && new_password.length >= 6)
+    ? new_password
+    : `Reset_${Math.random().toString(36).slice(-6)}!2026`;
 
-  const deleted = db.deleteUser(id);
+  const { hash, salt } = AuthService.hashPassword(passToSet);
+  db.updateUser(id, {
+    password_hash: hash,
+    salt,
+  });
+
   res.json({
-    success: deleted,
-    message: deleted ? `User ${target.email} berhasil dihapus.` : 'Gagal menghapus user.',
-    deleted_user: {
-      id: target.id,
-      email: target.email,
-      name: target.name,
-    },
+    success: true,
+    message: `Password akun ${target.email} berhasil di-reset.`,
+    temporary_password: passToSet,
   });
 });
+
+// Admin Generate Magic Login Link
+adminRouter.post('/users/:id/magic-link', (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const target = db.getUserById(id);
+  if (!target) {
+    res.status(404).json({ error: 'User not found.' });
+    return;
+  }
+
+  const tokenRecord = db.createVerificationToken(target.id, target.email, 48, 'magic_link');
+  const protocol = req.protocol || 'https';
+  const host = req.get('host') || 'localhost:3000';
+  const magicLink = `${protocol}://${host}/magic-verify?token=${tokenRecord.token}`;
+
+  res.json({
+    success: true,
+    token: tokenRecord.token,
+    magic_link: magicLink,
+    user_email: target.email,
+    expires_at: tokenRecord.expires_at,
+  });
+});
+
+// Admin Toggle Verification
+adminRouter.post('/users/:id/toggle-verification', (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const target = db.getUserById(id);
+  if (!target) {
+    res.status(404).json({ error: 'User not found.' });
+    return;
+  }
+
+  const nextStatus = !target.is_verified;
+  const updated = db.updateUser(id, {
+    is_verified: nextStatus,
+    verification_status: nextStatus ? 'verified' : 'pending_verification',
+  });
+
+  res.json({
+    success: true,
+    is_verified: updated?.is_verified,
+    user: updated,
+    message: nextStatus ? `User ${target.email} telah diverifikasi.` : `Status verifikasi user ${target.email} dicabut.`,
+  });
+});
+
+// Admin SMTP Configuration Status
+adminRouter.get('/smtp/status', (req: AuthenticatedRequest, res: Response) => {
+  const config = mailService.getSmtpConfigSummary();
+  const lastSent = mailService.getLastSentEmail();
+  res.json({
+    success: true,
+    config,
+    last_sent: lastSent
+      ? {
+          to: lastSent.to,
+          subject: lastSent.subject,
+          sentAt: lastSent.sentAt,
+        }
+      : null,
+    server_time: new Date().toISOString(),
+  });
+});
+
+// Admin SMTP Live Connection & Authentication Tester
+adminRouter.post('/smtp/test', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { recipient, send_test_email } = req.body || {};
+    const testRecipient = send_test_email ? (recipient || req.user?.email || '').trim() : undefined;
+
+    const result = await mailService.verifySmtpConnection(testRecipient);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      connected: false,
+      testEmailSent: false,
+      message: `Terjadi kesalahan saat menguji SMTP: ${err.message || String(err)}`,
+      config: mailService.getSmtpConfigSummary(),
+    });
+  }
+});
+
+

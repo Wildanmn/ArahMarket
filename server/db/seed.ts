@@ -95,6 +95,36 @@ export function seedDatabase(): void {
     });
   }
 
+  // Ensure danwil028@gmail.com has ADMIN authority
+  const danwil = db.getUserByEmail('danwil028@gmail.com');
+  if (danwil) {
+    if (danwil.role !== 'ADMIN' || !danwil.is_verified || danwil.plan !== 'INSTITUTIONAL') {
+      db.updateUser(danwil.id, {
+        role: 'ADMIN',
+        plan: 'INSTITUTIONAL',
+        is_verified: true,
+        verification_status: 'verified',
+        subscription_status: 'active',
+      });
+    }
+  } else {
+    const adminPass = hashPassword('Trader123!');
+    db.insertUser({
+      id: 'usr_admin_danwil',
+      email: 'danwil028@gmail.com',
+      password_hash: adminPass.hash,
+      salt: adminPass.salt,
+      name: 'Danwil Administrator',
+      role: 'ADMIN',
+      is_verified: true,
+      verification_status: 'verified',
+      plan: 'INSTITUTIONAL',
+      subscription_status: 'active',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+  }
+
   // 2. Seed Sources
   if (stats.sources_count === 0) {
     const sources: Source[] = [

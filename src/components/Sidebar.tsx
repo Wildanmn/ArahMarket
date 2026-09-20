@@ -17,6 +17,7 @@ import {
   Layers,
   User as UserIcon,
   LogOut,
+  History,
 } from 'lucide-react';
 import { User } from '../types';
 
@@ -26,6 +27,7 @@ export type NavTabId =
   | 'today_catalysts'
   | 'markets'
   | 'currency'
+  | 'history'
   | 'macro'
   | 'events'
   | 'intelligence'
@@ -132,6 +134,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
           shortLabel: 'AI Intel',
           icon: Brain,
           badge: null,
+        },
+        {
+          id: 'history' as NavTabId,
+          label: 'Market History & Memory',
+          shortLabel: 'History',
+          icon: History,
+          badge: 'Dossier',
+          badgeColor: 'bg-indigo-950/80 text-indigo-300 border-indigo-800/80',
         },
       ],
     },

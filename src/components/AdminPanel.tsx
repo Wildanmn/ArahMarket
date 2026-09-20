@@ -17,20 +17,23 @@ import {
   Edit2,
   Check,
   X,
+  Mail,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { TelegramChannel, User } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
+import { AdminUserManagement } from './AdminUserManagement';
+import { AdminSmtpTester } from './AdminSmtpTester';
 
-export const AdminPanel: React.FC = () => {
-  const [activeSubTab, setActiveSubTab] = useState<'users' | 'telegram' | 'sources' | 'duplicates' | 'health' | 'test'>('users');
+interface AdminPanelProps {
+  currentUser?: User | null;
+}
+
+export const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser }) => {
+  const [activeSubTab, setActiveSubTab] = useState<'users' | 'smtp' | 'telegram' | 'sources' | 'duplicates' | 'health' | 'test'>('users');
 
   // Users state
   const [usersList, setUsersList] = useState<User[]>([]);
-  const [editingUserId, setEditingUserId] = useState<string | null>(null);
-  const [editRole, setEditRole] = useState<'USER' | 'ADMIN'>('USER');
-  const [editPlan, setEditPlan] = useState<'FREE' | 'PRO' | 'INSTITUTIONAL'>('FREE');
-  const [editStatus, setEditStatus] = useState<string>('active');
 
   // Telegram state
   const [channels, setChannels] = useState<TelegramChannel[]>([]);
@@ -77,41 +80,6 @@ export const AdminPanel: React.FC = () => {
       console.warn('Admin load error:', err.message);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleSaveUser = async (userId: string) => {
-    try {
-      const res = await api.updateAdminUser(userId, {
-        role: editRole,
-        plan: editPlan,
-        subscription_status: editStatus,
-      });
-      if (res.success) {
-        setActionNotice(`User ${res.user.email} updated successfully.`);
-        setEditingUserId(null);
-        loadData();
-      }
-    } catch (err: any) {
-      alert(err.message || 'Failed to update user');
-    }
-  };
-
-  const handleDeleteUser = async (userId: string, userEmail: string) => {
-    const confirmed = window.confirm(
-      `⚠️ Hapus user "${userEmail}"?\n\nSemua data user termasuk watchlist dan token verifikasi akan dihapus permanen.\n\nLanjutkan?`
-    );
-    if (!confirmed) return;
-
-    try {
-      const res = await api.deleteAdminUser(userId);
-      if (res.success) {
-        setActionNotice(res.message || `User ${userEmail} berhasil dihapus.`);
-        setUsersList(prev => prev.filter(u => u.id !== userId));
-        if (editingUserId === userId) setEditingUserId(null);
-      }
-    } catch (err: any) {
-      alert(err.message || 'Gagal menghapus user');
     }
   };
 
@@ -230,6 +198,7 @@ export const AdminPanel: React.FC = () => {
       <div className="flex items-center gap-1 border-b border-slate-800 pb-2 text-xs font-mono overflow-x-auto">
         {[
           { id: 'users', label: 'Users & Subscriptions', count: usersList.length },
+          { id: 'smtp', label: 'SMTP & Email Tester' },
           { id: 'telegram', label: 'Telegram Channels', count: channels.length },
           { id: 'sources', label: 'Data Sources Registry', count: sources.length },
           { id: 'duplicates', label: 'Deduplicated Events', count: duplicates.length },
@@ -266,169 +235,19 @@ export const AdminPanel: React.FC = () => {
           className="w-full space-y-4"
         >
           {activeSubTab === 'users' && (
-        <div className="space-y-4">
-          <div className="p-3.5 rounded-lg bg-slate-900/60 border border-slate-800 flex items-center justify-between">
-            <div>
-              <h3 className="text-xs font-mono font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
-                <Users className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Account, Role & Tier Authority</span>
-              </h3>
-              <p className="text-[11px] text-slate-400 mt-1">
-                Admin controls to modify roles (USER / ADMIN), grant or change subscription tiers (FREE / PRO / INSTITUTIONAL), and manage statuses.
-              </p>
-            </div>
-            <button
-              onClick={loadData}
-              className="px-2.5 py-1 text-xs font-mono text-slate-300 bg-slate-800 hover:bg-slate-700 rounded border border-slate-700 flex items-center gap-1.5 cursor-pointer"
-            >
-              <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
-              <span>Refresh Accounts</span>
-            </button>
-          </div>
+            <AdminUserManagement
+              currentUser={currentUser}
+              onUserModified={loadData}
+            />
+          )}
 
-          <div className="rounded-lg border border-slate-800 bg-slate-900/40 overflow-x-auto">
-            <table className="w-full text-left font-mono text-xs">
-              <thead className="bg-slate-900/80 text-slate-400 border-b border-slate-800">
-                <tr>
-                  <th className="p-3 font-semibold">User Details</th>
-                  <th className="p-3 font-semibold">Role</th>
-                  <th className="p-3 font-semibold">Subscription Plan</th>
-                  <th className="p-3 font-semibold">Status</th>
-                  <th className="p-3 font-semibold text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 text-slate-300">
-                {usersList.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="p-6 text-center text-slate-500">
-                      No users found.
-                    </td>
-                  </tr>
-                ) : (
-                  usersList.map(u => {
-                    const isEditing = editingUserId === u.id;
-                    return (
-                      <tr key={u.id} className="hover:bg-slate-800/30 transition">
-                        <td className="p-3">
-                          <div className="font-semibold text-slate-100">{u.name || 'Unnamed Trader'}</div>
-                          <div className="text-[11px] text-slate-400">{u.email}</div>
-                          <div className="text-[9px] text-slate-600 mt-0.5">ID: {u.id}</div>
-                        </td>
-                        <td className="p-3">
-                          {isEditing ? (
-                            <select
-                              value={editRole}
-                              onChange={e => setEditRole(e.target.value as any)}
-                              className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200"
-                            >
-                              <option value="USER">USER</option>
-                              <option value="ADMIN">ADMIN</option>
-                            </select>
-                          ) : (
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                              u.role === 'ADMIN'
-                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                                : 'bg-slate-800 text-slate-300 border border-slate-700'
-                            }`}>
-                              {u.role}
-                            </span>
-                          )}
-                        </td>
-                        <td className="p-3">
-                          {isEditing ? (
-                            <select
-                              value={editPlan}
-                              onChange={e => setEditPlan(e.target.value as any)}
-                              className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200"
-                            >
-                              <option value="FREE">FREE</option>
-                              <option value="PRO">PRO</option>
-                              <option value="INSTITUTIONAL">INSTITUTIONAL</option>
-                            </select>
-                          ) : (
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                              u.plan === 'INSTITUTIONAL'
-                                ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40'
-                                : u.plan === 'PRO'
-                                ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
-                                : 'bg-slate-800 text-slate-400 border border-slate-700'
-                            }`}>
-                              {u.plan || 'FREE'}
-                            </span>
-                          )}
-                        </td>
-                        <td className="p-3">
-                          {isEditing ? (
-                            <select
-                              value={editStatus}
-                              onChange={e => setEditStatus(e.target.value)}
-                              className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200"
-                            >
-                              <option value="active">Active</option>
-                              <option value="trialing">Trialing</option>
-                              <option value="canceled">Canceled</option>
-                              <option value="expired">Expired</option>
-                            </select>
-                          ) : (
-                            <span className="text-[11px] text-emerald-400">
-                              {u.subscription_status || 'active'}
-                            </span>
-                          )}
-                        </td>
-                        <td className="p-3 text-right">
-                          {isEditing ? (
-                            <div className="flex items-center justify-end gap-1.5">
-                              <button
-                                onClick={() => handleSaveUser(u.id)}
-                                className="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs flex items-center gap-1 cursor-pointer"
-                              >
-                                <Check className="w-3 h-3" />
-                                <span>Save</span>
-                              </button>
-                              <button
-                                onClick={() => setEditingUserId(null)}
-                                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs flex items-center gap-1 cursor-pointer"
-                              >
-                                <X className="w-3 h-3" />
-                                <span>Cancel</span>
-                              </button>
-                            </div>
-                          ) : (
-                            <div className="flex items-center justify-end gap-1.5">
-                              <button
-                                onClick={() => {
-                                  setEditingUserId(u.id);
-                                  setEditRole(u.role as any || 'USER');
-                                  setEditPlan(u.plan as any || 'FREE');
-                                  setEditStatus(u.subscription_status || 'active');
-                                }}
-                                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-cyan-400 rounded text-xs flex items-center gap-1 cursor-pointer"
-                              >
-                                <Edit2 className="w-3 h-3" />
-                                <span>Edit</span>
-                              </button>
-                              {u.role !== 'ADMIN' && (
-                                <button
-                                  onClick={() => handleDeleteUser(u.id, u.email)}
-                                  className="px-2 py-1 bg-slate-800 hover:bg-red-900/80 text-slate-400 hover:text-red-400 rounded text-xs flex items-center gap-1 cursor-pointer transition"
-                                  title={`Hapus ${u.email}`}
-                                >
-                                  <Trash2 className="w-3 h-3" />
-                                  <span>Delete</span>
-                                </button>
-                              )}
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+          {/* Tab SMTP: Live Connection & Email Tester */}
+          {activeSubTab === 'smtp' && (
+            <AdminSmtpTester
+              currentUserEmail={currentUser?.email}
+              onStatusChange={loadData}
+            />
+          )}
 
       {/* Tab 1: Telegram Channels */}
       {activeSubTab === 'telegram' && (

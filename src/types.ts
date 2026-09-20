@@ -326,3 +326,102 @@ export interface TodayCatalyst {
   last_updated: string;
   data_status: 'LIVE' | 'RECENT' | 'DELAYED' | 'UNAVAILABLE';
 }
+
+export interface DailyMarketSnapshot {
+  id: string; // e.g. "snapshot_2026-09-20"
+  date: string; // "YYYY-MM-DD"
+  timestamp: string; // ISO
+  title: string;
+  market_biases: Record<string, {
+    symbol: string;
+    bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL' | 'MIXED';
+    score: number;
+    price: number;
+    change_24h_pct: number;
+    strength_label: string; // "Strong" | "Moderate" | "Weak"
+    major_catalyst: string;
+    last_updated: string;
+  }>;
+  currency_strength: Array<{
+    currency: string;
+    score: number;
+    rank: number;
+    direction: string;
+    change_vs_yesterday?: number;
+    change_vs_7d?: number;
+  }>;
+  major_catalysts: Array<{
+    event_name: string;
+    currency: string;
+    impact: string;
+    actual?: string | null;
+    forecast?: string | null;
+    market_reaction?: string;
+  }>;
+  market_reaction_summary: string;
+  ai_summary: string;
+  ai_why: string[];
+  ai_risk: string[];
+  ai_context: string[];
+  historical_insights: string[];
+  created_at: string;
+}
+
+export interface MarketMemoryInsight {
+  id: string;
+  type: 'CURRENCY' | 'ASSET' | 'CORRELATION' | 'MACRO';
+  title: string;
+  description: string;
+  evidence: string;
+  metric: string;
+  confidence: number;
+  created_at: string;
+}
+
+export interface HistoricalCurrencyComparison {
+  currency: string;
+  today_score: number;
+  yesterday_score: number;
+  three_day_score: number;
+  seven_day_score: number;
+  delta_yesterday: number;
+  delta_3d: number;
+  delta_7d: number;
+  trend: 'STRENGTHENING' | 'WEAKENING' | 'STABLE';
+}
+
+export interface SmtpConfigSummary {
+  configured: boolean;
+  host: string;
+  port: number;
+  secure: boolean;
+  hasUser: boolean;
+  hasPass: boolean;
+  passLength: number;
+  userMasked: string;
+  isEmailValid: boolean;
+  mode: 'LIVE_SMTP' | 'DEVELOPMENT_SIMULATION';
+}
+
+export interface SmtpStatusResponse {
+  success: boolean;
+  config: SmtpConfigSummary;
+  last_sent?: {
+    to: string;
+    subject: string;
+    sentAt: string;
+  } | null;
+  server_time: string;
+}
+
+export interface SmtpTestResponse {
+  success: boolean;
+  connected: boolean;
+  testEmailSent: boolean;
+  message: string;
+  details?: string;
+  latencyMs?: number;
+  config: SmtpConfigSummary;
+}
+
+

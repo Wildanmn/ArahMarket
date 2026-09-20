@@ -1,7 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
 import { NavTabId } from '../components/Sidebar';
 
-export const PUBLIC_ROUTES = ['/', '/login', '/register', '/features', '/verify-email'] as const;
+export const PUBLIC_ROUTES = [
+  '/',
+  '/login',
+  '/register',
+  '/features',
+  '/verify-email',
+  '/forgot-password',
+  '/reset-password',
+] as const;
 export const PRIVATE_ROUTES = [
   '/dashboard',
   '/markets',
@@ -9,6 +17,7 @@ export const PRIVATE_ROUTES = [
   '/calendar',
   '/currency-strength',
   '/intelligence',
+  '/history',
   '/watchlist',
   '/settings',
 ] as const;
@@ -93,6 +102,8 @@ export function routeToTab(path: string): NavTabId {
       return 'currency';
     case '/intelligence':
       return 'intelligence';
+    case '/history':
+      return 'history';
     case '/watchlist':
       return 'watchlist';
     case '/settings':
@@ -119,6 +130,8 @@ export function tabToRoute(tab: NavTabId): string {
       return '/news';
     case 'intelligence':
       return '/intelligence';
+    case 'history':
+      return '/history';
     case 'watchlist':
       return '/watchlist';
     case 'admin':

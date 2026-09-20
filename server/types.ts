@@ -33,6 +33,7 @@ export interface VerificationToken {
   expires_at: string;
   created_at: string;
   used_at?: string;
+  type?: 'email_verification' | 'password_reset' | 'magic_link';
 }
 
 export interface UserPreferences {

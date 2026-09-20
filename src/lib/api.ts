@@ -14,6 +14,11 @@ import {
   IntradayAssetBias,
   TodayCatalyst,
   SubscriptionPlan,
+  DailyMarketSnapshot,
+  MarketMemoryInsight,
+  HistoricalCurrencyComparison,
+  SmtpStatusResponse,
+  SmtpTestResponse,
 } from '../types';
 
 export const API_BASE = '/api';
@@ -150,20 +155,120 @@ export const api = {
     body: JSON.stringify({ plan }),
   }),
   getUserEntitlements: () => request<any>('/user/entitlements'),
-  requestPasswordReset: (email: string) => request<{ message: string }>('/auth/password-reset', {
+  requestPasswordReset: (email: string) => request<{ message: string; resetUrl?: string }>('/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  }),
+  forgotPassword: (email: string) => request<{ success: boolean; message: string; resetUrl?: string; email: string }>('/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  }),
+  resetPassword: (payload: { token?: string; newPassword: string; email?: string; directReset?: boolean }) => request<{
+    success: boolean;
+    message: string;
+    token: string;
+    user: User;
+  }>('/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),
+  requestMagicLink: (email: string) => request<{ success: boolean; message: string; magicUrl?: string; email: string }>('/auth/magic-link', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  }),
+  verifyMagicLink: (token: string) => request<{
+    success: boolean;
+    message: string;
+    token: string;
+    user: User;
+  }>('/auth/magic-link-verify', {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  }),
+  quickLogin: (email?: string) => request<{
+    success: boolean;
+    message: string;
+    token: string;
+    user: User;
+  }>('/auth/quick-login', {
     method: 'POST',
     body: JSON.stringify({ email }),
   }),
 
   // Admin
   getSystemHealth: () => request<any>('/admin/system-health'),
-  getAdminUsers: () => request<{ users: User[]; count: number }>('/admin/users'),
-  updateAdminUser: (id: string, updates: { role?: string; plan?: string; subscription_status?: string }) => request<{ success: boolean; user: User }>(`/admin/users/${id}`, {
+  getAdminUsers: (params?: { search?: string; role?: string; plan?: string; status?: string; verified?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.search) q.set('search', params.search);
+    if (params?.role) q.set('role', params.role);
+    if (params?.plan) q.set('plan', params.plan);
+    if (params?.status) q.set('status', params.status);
+    if (params?.verified) q.set('verified', params.verified);
+    const qs = q.toString();
+    return request<{
+      users: User[];
+      count: number;
+      metrics?: {
+        total: number;
+        verified: number;
+        unverified: number;
+        admins: number;
+        pro: number;
+        institutional: number;
+        free: number;
+      };
+    }>(`/admin/users${qs ? `?${qs}` : ''}`);
+  },
+  createAdminUser: (data: {
+    name: string;
+    email: string;
+    password?: string;
+    role?: 'USER' | 'ADMIN';
+    plan?: 'FREE' | 'PRO' | 'INSTITUTIONAL';
+    subscription_status?: string;
+    is_verified?: boolean;
+  }) => request<{ success: boolean; user: User; initial_password?: string }>('/admin/users', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+  updateAdminUser: (id: string, updates: {
+    name?: string;
+    email?: string;
+    role?: string;
+    plan?: string;
+    subscription_status?: string;
+    is_verified?: boolean;
+  }) => request<{ success: boolean; user: User }>(`/admin/users/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(updates),
   }),
-  deleteAdminUser: (id: string) => request<{ success: boolean; message: string; deleted_user: { id: string; email: string; name: string } }>(`/admin/users/${id}`, {
+  deleteAdminUser: (id: string) => request<{ success: boolean; message: string; deleted_id: string }>(`/admin/users/${id}`, {
     method: 'DELETE',
+  }),
+  resetAdminUserPassword: (id: string, new_password?: string) => request<{
+    success: boolean;
+    message: string;
+    temporary_password?: string;
+  }>(`/admin/users/${id}/reset-password`, {
+    method: 'POST',
+    body: JSON.stringify({ new_password }),
+  }),
+  generateAdminUserMagicLink: (id: string) => request<{
+    success: boolean;
+    token: string;
+    magic_link: string;
+    user_email: string;
+    expires_at: string;
+  }>(`/admin/users/${id}/magic-link`, {
+    method: 'POST',
+  }),
+  toggleAdminUserVerification: (id: string) => request<{
+    success: boolean;
+    is_verified: boolean;
+    user: User;
+    message: string;
+  }>(`/admin/users/${id}/toggle-verification`, {
+    method: 'POST',
   }),
   getSources: () => request<{ sources: any[]; count: number }>('/admin/sources'),
   toggleSource: (id: string, is_enabled: boolean) => request<any>(`/admin/sources/${id}`, {
@@ -203,4 +308,32 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(payload),
   }),
+
+  // Historical Market Memory & Snapshots
+  getDailySnapshots: (range = 'ALL', date?: string, limit = 30) =>
+    request<{ snapshots: DailyMarketSnapshot[]; count: number }>(`/history/snapshots?range=${range}${date ? `&date=${date}` : ''}&limit=${limit}`),
+  getDailySnapshotDetail: (date: string) =>
+    request<{
+      snapshot: DailyMarketSnapshot;
+      events: MarketEvent[];
+      economic_events: EconomicEvent[];
+      currency_history: any[];
+    }>(`/history/snapshot/${date}`),
+  getMarketMemoryInsights: () =>
+    request<{ insights: MarketMemoryInsight[]; count: number }>('/history/insights'),
+  getHistoricalCurrencyComparison: () =>
+    request<{ comparisons: HistoricalCurrencyComparison[]; count: number; source: string }>('/history/currency-comparison'),
+  generateDailySnapshot: (date?: string) =>
+    request<{ success: boolean; snapshot: DailyMarketSnapshot }>('/history/generate-snapshot', {
+      method: 'POST',
+      body: JSON.stringify({ date }),
+    }),
+
+  // Admin SMTP Management & Connection Tester
+  getSmtpStatus: () => request<SmtpStatusResponse>('/admin/smtp/status'),
+  testSmtpConnection: (payload?: { send_test_email?: boolean; recipient?: string }) =>
+    request<SmtpTestResponse>('/admin/smtp/test', {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
 };
