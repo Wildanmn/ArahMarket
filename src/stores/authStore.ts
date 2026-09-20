@@ -29,10 +29,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   watchlist: [],
   isAuthChecking: true,
-  token: localStorage.getItem(TOKEN_KEY) || null,
+  token: localStorage.getItem(TOKEN_KEY) || localStorage.getItem('arah_market_auth_token') || localStorage.getItem('nexus_auth_token') || localStorage.getItem('auth_token') || null,
 
   getToken: () => {
-    return localStorage.getItem(TOKEN_KEY) || null;
+    return localStorage.getItem(TOKEN_KEY)
+      || localStorage.getItem('arah_market_auth_token')
+      || localStorage.getItem('nexus_auth_token')
+      || localStorage.getItem('auth_token')
+      || null;
   },
 
   setToken: (token) => {

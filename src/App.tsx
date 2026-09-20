@@ -4,6 +4,7 @@ import { useMarketStore } from './stores/marketStore';
 import { useUIStore, NavTabId } from './stores/uiStore';
 import { useLocation, isPrivateRoute, routeToTab, tabToRoute } from './lib/router';
 import { useSSE } from './lib/useSSE';
+import { User } from './types';
 import { Layers } from 'lucide-react';
 
 // Lazy imports for code splitting
@@ -62,10 +63,17 @@ export default function App() {
     if (targetRoute !== path) navigate(targetRoute);
   };
 
-  // Auth success handler
-  const handleAuthSuccess = async (u: any) => {
+  // Auth success handler - receives (user, token) from AuthPage
+  const handleAuthSuccess = async (u: User, token?: string) => {
+    if (token) {
+      useAuthStore.getState().setToken(token);
+    }
     useAuthStore.getState().setUser(u);
-    await useAuthStore.getState().checkSession();
+    try {
+      await useAuthStore.getState().checkSession();
+    } catch (err) {
+      console.warn('Session hydration notice:', err);
+    }
     await loadInitialData();
     navigate('/dashboard', true);
   };
