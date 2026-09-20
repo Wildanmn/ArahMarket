@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Market Intelligence Platform</title>
+    <meta name="description" content="Real-time market intelligence platform for traders with multi-source news ingestion, cross-language event deduplication, asset relationship mapping, and live market context." />
+    <meta property="og:title" content="Market Intelligence Platform" />
+    <meta property="og:description" content="Real-time market intelligence platform for traders with multi-source news ingestion, cross-language event deduplication, asset relationship mapping, and live market context." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script>
+      (function() {
+        try {
+          var origFetch = window.fetch;
+          var curFetch = origFetch;
+          Object.defineProperty(window, 'fetch', {
+            get: function() { return curFetch; },
+            set: function(fn) { curFetch = fn; },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-slate-950 text-slate-100 antialiased selection:bg-cyan-500/30 selection:text-cyan-200">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
