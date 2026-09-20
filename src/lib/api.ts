@@ -162,6 +162,9 @@ export const api = {
     method: 'PATCH',
     body: JSON.stringify(updates),
   }),
+  deleteAdminUser: (id: string) => request<{ success: boolean; message: string; deleted_user: { id: string; email: string; name: string } }>(`/admin/users/${id}`, {
+    method: 'DELETE',
+  }),
   getSources: () => request<{ sources: any[]; count: number }>('/admin/sources'),
   toggleSource: (id: string, is_enabled: boolean) => request<any>(`/admin/sources/${id}`, {
     method: 'PATCH',

@@ -302,3 +302,37 @@ adminRouter.patch('/users/:id', (req: Request, res: Response) => {
   });
 });
 
+// 8. Delete User (Admin Only)
+adminRouter.delete('/users/:id', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const authReq = req as AuthenticatedRequest;
+
+  // Prevent admin from deleting themselves
+  if (authReq.user && authReq.user.id === id) {
+    res.status(400).json({ error: 'Tidak bisa menghapus akun sendiri.' });
+    return;
+  }
+
+  const target = db.getUserById(id);
+  if (!target) {
+    res.status(404).json({ error: 'User tidak ditemukan.' });
+    return;
+  }
+
+  // Prevent deleting other admins (safety)
+  if (target.role === 'ADMIN') {
+    res.status(403).json({ error: 'Tidak bisa menghapus akun admin lain. Ubah role ke USER terlebih dahulu.' });
+    return;
+  }
+
+  const deleted = db.deleteUser(id);
+  res.json({
+    success: deleted,
+    message: deleted ? `User ${target.email} berhasil dihapus.` : 'Gagal menghapus user.',
+    deleted_user: {
+      id: target.id,
+      email: target.email,
+      name: target.name,
+    },
+  });
+});

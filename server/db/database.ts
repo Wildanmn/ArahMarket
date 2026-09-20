@@ -230,6 +230,32 @@ export class RelationalDatabase {
     return user;
   }
 
+  public deleteUser(id: string): boolean {
+    const user = this.indexes.usersById.get(id);
+    if (!user) return false;
+
+    // Remove from data array
+    const idx = this.data.users.findIndex(u => u.id === id);
+    if (idx >= 0) this.data.users.splice(idx, 1);
+
+    // Remove from indexes
+    this.indexes.usersById.delete(id);
+    this.indexes.usersByEmail.delete(user.email.toLowerCase());
+
+    // Clean up related watchlist entries
+    if (this.data.watchlists) {
+      this.data.watchlists = this.data.watchlists.filter((w: any) => w.user_id !== id);
+    }
+
+    // Clean up verification tokens
+    if (this.data.verification_tokens) {
+      this.data.verification_tokens = this.data.verification_tokens.filter((vt: any) => vt.user_id !== id);
+    }
+
+    this.scheduleSave();
+    return true;
+  }
+
   // ==================== EMAIL VERIFICATION TOKENS ====================
   public createVerificationToken(userId: string, email: string, expiresInHours = 24): VerificationToken {
     if (!this.data.verification_tokens) {

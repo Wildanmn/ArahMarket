@@ -97,6 +97,24 @@ export const AdminPanel: React.FC = () => {
     }
   };
 
+  const handleDeleteUser = async (userId: string, userEmail: string) => {
+    const confirmed = window.confirm(
+      `⚠️ Hapus user "${userEmail}"?\n\nSemua data user termasuk watchlist dan token verifikasi akan dihapus permanen.\n\nLanjutkan?`
+    );
+    if (!confirmed) return;
+
+    try {
+      const res = await api.deleteAdminUser(userId);
+      if (res.success) {
+        setActionNotice(res.message || `User ${userEmail} berhasil dihapus.`);
+        setUsersList(prev => prev.filter(u => u.id !== userId));
+        if (editingUserId === userId) setEditingUserId(null);
+      }
+    } catch (err: any) {
+      alert(err.message || 'Gagal menghapus user');
+    }
+  };
+
   useEffect(() => {
     loadData();
   }, []);
@@ -376,18 +394,30 @@ export const AdminPanel: React.FC = () => {
                               </button>
                             </div>
                           ) : (
-                            <button
-                              onClick={() => {
-                                setEditingUserId(u.id);
-                                setEditRole(u.role as any || 'USER');
-                                setEditPlan(u.plan as any || 'FREE');
-                                setEditStatus(u.subscription_status || 'active');
-                              }}
-                              className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-cyan-400 rounded text-xs flex items-center gap-1 ml-auto cursor-pointer"
-                            >
-                              <Edit2 className="w-3 h-3" />
-                              <span>Edit</span>
-                            </button>
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                onClick={() => {
+                                  setEditingUserId(u.id);
+                                  setEditRole(u.role as any || 'USER');
+                                  setEditPlan(u.plan as any || 'FREE');
+                                  setEditStatus(u.subscription_status || 'active');
+                                }}
+                                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-cyan-400 rounded text-xs flex items-center gap-1 cursor-pointer"
+                              >
+                                <Edit2 className="w-3 h-3" />
+                                <span>Edit</span>
+                              </button>
+                              {u.role !== 'ADMIN' && (
+                                <button
+                                  onClick={() => handleDeleteUser(u.id, u.email)}
+                                  className="px-2 py-1 bg-slate-800 hover:bg-red-900/80 text-slate-400 hover:text-red-400 rounded text-xs flex items-center gap-1 cursor-pointer transition"
+                                  title={`Hapus ${u.email}`}
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                  <span>Delete</span>
+                                </button>
+                              )}
+                            </div>
                           )}
                         </td>
                       </tr>
