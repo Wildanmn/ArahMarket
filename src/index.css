@@ -1,1 +1,26 @@
 @import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  --arah-bg: #07111f;
+  --arah-surface: #0d1b2d;
+  --arah-border: rgba(148, 163, 184, 0.16);
+  --arah-accent: #22d3ee;
+}
+
+html {
+  scroll-behavior: smooth;
+  background: var(--arah-bg);
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--arah-bg);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+button, a, input {
+  transition-duration: 180ms;
+}

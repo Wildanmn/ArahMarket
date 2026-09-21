@@ -42,9 +42,9 @@ export const PublicLandingPage: React.FC<PublicLandingPageProps> = ({
   }, [currentPath]);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500 selection:text-slate-950">
+    <div className="min-h-screen bg-[#07111f] text-slate-100 flex flex-col font-sans selection:bg-cyan-400 selection:text-slate-950">
       {/* Public Top Navigation Bar */}
-      <header className="sticky top-0 z-50 bg-slate-950/90 backdrop-blur-md border-b border-slate-800/80 px-4 sm:px-8 py-3.5 flex items-center justify-between">
+      <header className="sticky top-0 z-50 bg-[#07111f]/85 backdrop-blur-xl border-b border-white/10 px-4 sm:px-8 py-4 flex items-center justify-between">
         <div className="flex items-center gap-6">
           {/* Logo / Brand */}
           <div
@@ -109,9 +109,10 @@ export const PublicLandingPage: React.FC<PublicLandingPageProps> = ({
       </header>
 
       {/* Hero Section */}
-      <section className="relative px-4 sm:px-8 pt-16 pb-20 max-w-6xl mx-auto w-full text-center flex flex-col items-center">
+      <section className="relative px-4 sm:px-8 pt-20 pb-24 max-w-7xl mx-auto w-full text-center flex flex-col items-center overflow-hidden">
         {/* Subtle Ambient Glow */}
-        <div className="absolute -top-10 left-1/2 -translate-x-1/2 w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute -top-40 left-1/2 -translate-x-1/2 w-[38rem] h-[38rem] bg-cyan-400/12 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 w-[90%] h-px bg-linear-to-r from-transparent via-cyan-400/30 to-transparent pointer-events-none" />
 
         {/* Institutional Pill */}
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-950/60 border border-cyan-800/60 text-cyan-300 text-xs font-mono mb-6">
@@ -122,12 +123,12 @@ export const PublicLandingPage: React.FC<PublicLandingPageProps> = ({
         </div>
 
         {/* Clear Headline */}
-        <h1 className="text-3xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight text-slate-100 max-w-4xl leading-tight">
+        <h1 className="text-4xl sm:text-6xl lg:text-7xl font-extrabold tracking-[-0.04em] text-slate-50 max-w-5xl leading-[0.98]">
           Real-Time Macro Intelligence & Market Surveillance for Serious Traders
         </h1>
 
         {/* Short Description */}
-        <p className="mt-6 text-base sm:text-lg text-slate-300 max-w-2xl leading-relaxed font-normal">
+        <p className="mt-7 text-base sm:text-lg text-slate-300/90 max-w-2xl leading-8 font-normal">
           Empowering traders with instant central bank telemetry, real-time G8 currency strength dispersion, canonical news wire analysis, and high-probability intraday asset bias.
         </p>
 
@@ -166,7 +167,7 @@ export const PublicLandingPage: React.FC<PublicLandingPageProps> = ({
         </div>
 
         {/* Preview / Visual Examples */}
-        <div className="mt-14 w-full max-w-5xl rounded-xl border border-slate-800 bg-slate-900/80 shadow-2xl overflow-hidden text-left font-mono">
+        <div className="mt-16 w-full max-w-6xl rounded-2xl border border-white/10 bg-slate-900/80 shadow-[0_24px_100px_rgba(0,0,0,0.4)] overflow-hidden text-left font-mono ring-1 ring-cyan-400/10">
           {/* Terminal Window Chrome */}
           <div className="bg-slate-950 px-4 py-2.5 border-b border-slate-800 flex items-center justify-between text-xs text-slate-400">
             <div className="flex items-center gap-2">
