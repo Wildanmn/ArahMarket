@@ -1,4 +1,5 @@
 import express from 'express';
+import { createServer as createHttpServer } from 'node:http';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
@@ -246,12 +247,13 @@ async function startServer() {
   }
 
   // 3. Vite Middleware (SPA handling)
+  const httpServer = createHttpServer(app);
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      // Express owns the HTTP server, so Vite cannot attach its HMR WebSocket
-      // endpoint here. Disable HMR to prevent the injected client from retrying
-      // a socket that can never be upgraded in middleware mode.
-      server: { middlewareMode: true, hmr: false },
+      // Share the HTTP server with Vite so its injected client can complete the
+      // WebSocket upgrade instead of closing before the socket is opened.
+      server: { middlewareMode: true, hmr: { server: httpServer } },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -263,7 +265,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[Server] Real-Time Market Intelligence Platform listening on http://0.0.0.0:${PORT}`);
   });
 }
